@@ -3,7 +3,8 @@ const cors = require('cors');
 const app = express();
 
 // Middleware
-app.use(express.json());
+// 2 MB: a full chart plus supplementary lists can exceed the 100 KB default.
+app.use(express.json({ limit: '2mb' }));
 app.use(cors()); // Allow all origins for MVP (restrict in production)
 
 // In-memory storage (replace with Redis or database in production)
@@ -110,7 +111,7 @@ app.get('/api/get-session/:sessionId', (req, res) => {
  */
 app.post('/api/submit-vote', (req, res) => {
   try {
-    const { sessionId, votes: voteData } = req.body;
+    const { sessionId, votes: voteData, supplementaryVotes } = req.body;
     
     // Validation
     if (!sessionId || !voteData) {
@@ -135,6 +136,18 @@ app.post('/api/submit-vote', (req, res) => {
       votes: voteData,
       timestamp: new Date().toISOString()
     };
+
+    // Optional — Supplementary Occupational Verification ratings
+    // ({ itemId: 0-3 }). Stored apart from task votes; older clients
+    // simply never send the field.
+    if (supplementaryVotes && typeof supplementaryVotes === 'object') {
+      const clean = {};
+      Object.keys(supplementaryVotes).forEach(id => {
+        const v = parseInt(supplementaryVotes[id], 10);
+        if (v >= 0 && v <= 3) clean[id] = v;
+      });
+      voteRecord.supplementaryVotes = clean;
+    }
     
     sessionVotes.push(voteRecord);
     
@@ -228,14 +241,47 @@ app.get('/api/get-results/:sessionId', (req, res) => {
       });
     });
     
+    // ── Supplementary Occupational Verification ──────────────────
+    // Only for sessions created with a `supplementary` block. Returned
+    // as raw 0-3 COUNTS per item (the same shape the tool's workshop
+    // mode uses), under its own key — task results and the Priority
+    // Index above are computed exactly as before and never mixed in.
+    const responseData = {
+      totalVotes: totalVotes,
+      taskResults: taskResults
+    };
+
+    const supp = sessionData.supplementary;
+    if (supp && Array.isArray(supp.categories)) {
+      const supplementaryResults = {};
+      supp.categories.forEach(cat => {
+        (cat.items || []).forEach(item => {
+          const counts = { 0: 0, 1: 0, 2: 0, 3: 0 };
+          let responses = 0, sum = 0;
+          sessionVotes.forEach(voteRecord => {
+            const v = voteRecord.supplementaryVotes && voteRecord.supplementaryVotes[item.id];
+            if (v === 0 || v === 1 || v === 2 || v === 3) {
+              counts[v]++; responses++; sum += v;
+            }
+          });
+          supplementaryResults[item.id] = {
+            categoryId: cat.id,
+            categoryName: cat.name,
+            text: item.text,
+            counts,
+            responses,
+            mean: responses ? sum / responses : null
+          };
+        });
+      });
+      responseData.supplementaryResults = supplementaryResults;
+    }
+
     console.log(`📊 Results retrieved for session: ${sessionId} (${totalVotes} votes)`);
     
     res.json({ 
       success: true, 
-      data: { 
-        totalVotes: totalVotes, 
-        taskResults: taskResults 
-      } 
+      data: responseData
     });
     
   } catch (error) {
@@ -304,7 +350,7 @@ app.delete('/api/debug/session/:sessionId', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`
   ╔══════════════════════════════════════════════╗
   ║  DACUM Live Workshop API Server              ║
@@ -328,7 +374,7 @@ app.listen(PORT, () => {
 // Handle graceful shutdown
 process.on('SIGTERM', () => {
   console.log('SIGTERM signal received: closing HTTP server');
-  app.close(() => {
+  server.close(() => {
     console.log('HTTP server closed');
   });
 });
