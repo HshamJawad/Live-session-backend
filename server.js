@@ -111,7 +111,7 @@ app.get('/api/get-session/:sessionId', (req, res) => {
  */
 app.post('/api/submit-vote', (req, res) => {
   try {
-    const { sessionId, votes: voteData, supplementaryVotes } = req.body;
+    const { sessionId, votes: voteData, supplementaryVotes, group } = req.body;
     
     // Validation
     if (!sessionId || !voteData) {
@@ -132,8 +132,12 @@ app.post('/api/submit-vote', (req, res) => {
     const sessionVotes = votes.get(sessionId);
     
     // Add timestamp to vote
+    // Optional — who voted: 'workshop' (in the room, the default) or
+    // 'external' (the link sent to practitioners outside the workshop,
+    // DACUM Live Pro 3.134+). Older clients never send it.
     const voteRecord = {
       votes: voteData,
+      group: group === 'external' ? 'external' : 'workshop',
       timestamp: new Date().toISOString()
     };
 
@@ -186,6 +190,10 @@ app.get('/api/get-results/:sessionId', (req, res) => {
     }
     
     const totalVotes = sessionVotes.length;
+    // How many voted in each group (3.134+). Votes stored before groups
+    // existed have none and count as workshop.
+    const groupCounts = { workshop: 0, external: 0 };
+    sessionVotes.forEach(v => { groupCounts[v.group === 'external' ? 'external' : 'workshop']++; });
     
     // If no votes yet, return empty results
     if (totalVotes === 0) {
@@ -193,7 +201,8 @@ app.get('/api/get-results/:sessionId', (req, res) => {
         success: true, 
         data: { 
           totalVotes: 0, 
-          taskResults: {} 
+          taskResults: {},
+          groupCounts
         } 
       });
     }
@@ -248,7 +257,8 @@ app.get('/api/get-results/:sessionId', (req, res) => {
     // Index above are computed exactly as before and never mixed in.
     const responseData = {
       totalVotes: totalVotes,
-      taskResults: taskResults
+      taskResults: taskResults,
+      groupCounts
     };
 
     const supp = sessionData.supplementary;
