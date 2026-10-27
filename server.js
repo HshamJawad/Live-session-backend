@@ -49,6 +49,70 @@ function cleanRating(v) {
 
 const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 
+// ── Session payload validation ───────────────────────────────────────────
+// Ids end up in HTML attributes on the voting page, so only plain ids are
+// accepted: letters, digits, _ and - (the app makes ids like duty_2_1,
+// sv_item_3 and a session id of 8+ characters).
+const SAFE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const SESSION_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+const LIMITS = { duties: 200, tasksPerDuty: 500, tasksTotal: 5000, categories: 50, itemsPerCategory: 500, text: 2000 };
+
+const isSafeId = v => typeof v === 'string' && SAFE_ID_RE.test(v);
+const isText = (v, max) => typeof v === 'string' && v.length <= (max || LIMITS.text);
+
+/** Returns an error message for a session that must not be stored, or null.
+ *  The message names the field, never the offending value. */
+function validateSessionPayload(sessionId, data) {
+  if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) {
+    return 'Invalid sessionId: use 8 to 64 letters, digits, _ or -';
+  }
+  if (!isPlainObject(data)) return 'Invalid data structure: data must be an object';
+  if (!isText(data.occupation, 500) || !data.occupation) return 'Invalid occupation';
+  if (data.jobTitle !== undefined && !isText(data.jobTitle, 500)) return 'Invalid jobTitle';
+
+  if (!isPlainObject(data.duties)) return 'Invalid duties: expected an object keyed by duty id';
+  const dutyIds = Object.keys(data.duties);
+  if (!dutyIds.length) return 'Invalid duties: at least one duty is required';
+  if (dutyIds.length > LIMITS.duties) return 'Too many duties';
+
+  const seenTasks = new Set();
+  for (const dutyId of dutyIds) {
+    if (!isSafeId(dutyId)) return 'Invalid duty id';
+    const duty = data.duties[dutyId];
+    if (!isPlainObject(duty)) return 'Invalid duty: ' + dutyId;
+    if (!isText(duty.title, 1000)) return 'Invalid title for duty ' + dutyId;
+    if (!Array.isArray(duty.tasks)) return 'Invalid tasks for duty ' + dutyId;
+    if (duty.tasks.length > LIMITS.tasksPerDuty) return 'Too many tasks in duty ' + dutyId;
+    for (const task of duty.tasks) {
+      if (!isPlainObject(task)) return 'Invalid task in duty ' + dutyId;
+      if (!isSafeId(task.id)) return 'Invalid task id in duty ' + dutyId;
+      if (!isText(task.text)) return 'Invalid text for task ' + task.id;
+      if (seenTasks.has(task.id)) return 'Duplicate task id: ' + task.id;
+      seenTasks.add(task.id);
+      if (seenTasks.size > LIMITS.tasksTotal) return 'Too many tasks';
+    }
+  }
+
+  if (data.supplementary !== undefined && data.supplementary !== null) {
+    const supp = data.supplementary;
+    if (!isPlainObject(supp) || !Array.isArray(supp.categories)) return 'Invalid supplementary block';
+    if (supp.categories.length > LIMITS.categories) return 'Too many supplementary categories';
+    const seenItems = new Set();
+    for (const cat of supp.categories) {
+      if (!isPlainObject(cat) || !isSafeId(cat.id)) return 'Invalid supplementary category id';
+      if (cat.name !== undefined && !isText(cat.name, 1000)) return 'Invalid name for category ' + cat.id;
+      if (!Array.isArray(cat.items) || cat.items.length > LIMITS.itemsPerCategory) return 'Invalid items for category ' + cat.id;
+      for (const item of cat.items) {
+        if (!isPlainObject(item) || !isSafeId(item.id)) return 'Invalid supplementary item id in category ' + cat.id;
+        if (!isText(item.text)) return 'Invalid text for item ' + item.id;
+        if (seenItems.has(item.id)) return 'Duplicate supplementary item id: ' + item.id;
+        seenItems.add(item.id);
+      }
+    }
+  }
+  return null;
+}
+
 // Every task of a session's data, tolerating missing or malformed duties/tasks.
 function forEachTask(sessionData, cb) {
   const duties = sessionData && sessionData.duties;
@@ -91,10 +155,21 @@ app.post('/api/create-session', (req, res) => {
       });
     }
     
-    if (!data.occupation || !data.duties || typeof data.duties !== 'object') {
+    const invalid = validateSessionPayload(sessionId, data);
+    if (invalid) {
       return res.status(400).json({ 
         success: false, 
-        error: 'Invalid data structure: missing occupation or duties' 
+        error: invalid 
+      });
+    }
+
+    // Never replace a session that already has votes (this would wipe them).
+    // Before the first vote it may be re-sent, e.g. a retry after a lost reply.
+    if (sessions.has(sessionId) && (votes.get(sessionId) || []).length > 0) {
+      return res.status(409).json({ 
+        success: false, 
+        code: 'session_exists',
+        error: 'A session with this id already has votes' 
       });
     }
     
@@ -238,8 +313,14 @@ app.post('/api/submit-vote', (req, res) => {
     // ({ itemId: 0-3 }). Stored apart from task votes; older clients
     // simply never send the field.
     if (isPlainObject(supplementaryVotes)) {
+      const validItemIds = new Set();
+      const supp = sessions.get(sessionId).data.supplementary;
+      if (supp && Array.isArray(supp.categories)) {
+        supp.categories.forEach(cat => (cat.items || []).forEach(item => validItemIds.add(String(item.id))));
+      }
       const clean = {};
       Object.keys(supplementaryVotes).forEach(id => {
+        if (!validItemIds.has(id)) return;
         const v = cleanRating(supplementaryVotes[id]);
         if (v !== null && Number.isInteger(v)) clean[id] = v;
       });

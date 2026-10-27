@@ -203,3 +203,18 @@ accepts the first vote for a token and answers every later one with **HTTP 409**
 - Set `REQUIRE_VOTER_TOKEN=1` once every participant uses the new page, to refuse votes without a token.
 - This stops repeat votes from reloading, the back button and network retries. It does not stop someone
   who deliberately clears their browser data or uses another device.
+
+## What `create-session` accepts
+
+Ids go into HTML attributes on the voting page, so `POST /api/create-session` refuses (HTTP 400, with the
+field named but never the bad value) any session that does not follow these rules:
+
+- `sessionId`: 8 to 64 letters, digits, `_` or `-`.
+- Duty ids (the keys of `duties`), task ids, supplementary category ids and item ids: 1 to 64 letters, digits, `_` or `-`.
+  Task ids must be unique in the session, and so must supplementary item ids.
+- `occupation` (required) up to 500 characters; `jobTitle` up to 500; duty titles up to 1000; task and item texts up to 2000.
+- `duties` is an object with 1 to 200 duties; each has a `tasks` array (up to 500; 5000 in all).
+- `supplementary` (optional) has at most 50 categories of up to 500 items.
+
+A session that already has votes cannot be replaced: the answer is HTTP 409 `session_exists`.
+Supplementary ratings for item ids that are not in the session are ignored.
