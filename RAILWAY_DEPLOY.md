@@ -192,3 +192,14 @@ curl -H "x-admin-token: <ADMIN_TOKEN>" https://<your-app>.up.railway.app/api/deb
 `POST /api/submit-vote` accepts only ratings for tasks that exist in the session, and only when
 `importance`, `frequency` and `difficulty` are all numbers from 0 to 3. Anything else is dropped;
 a submission with no valid rating is refused with HTTP 400.
+
+## One vote per device (`voterToken`)
+
+The voting page sends a random `voterToken` (made once per device and session). `POST /api/submit-vote`
+accepts the first vote for a token and answers every later one with **HTTP 409**
+(`{ "success": false, "code": "already_voted" }`); a refused or invalid submission does not use up the token.
+
+- Pages that send no token (older versions) are still accepted, so rollout order does not matter.
+- Set `REQUIRE_VOTER_TOKEN=1` once every participant uses the new page, to refuse votes without a token.
+- This stops repeat votes from reloading, the back button and network retries. It does not stop someone
+  who deliberately clears their browser data or uses another device.
