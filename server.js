@@ -10,6 +10,8 @@ app.use(cors()); // Allow all origins for MVP (restrict in production)
 // In-memory storage (replace with Redis or database in production)
 const sessions = new Map();
 const votes = new Map();
+// sessionId -> Set of voter tokens that already voted (one vote per device).
+const voters = new Map();
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 const crypto = require('crypto');
@@ -17,6 +19,12 @@ const crypto = require('crypto');
 // Debug/admin endpoints are OFF unless ADMIN_TOKEN is set, and then need the
 // header  x-admin-token: <ADMIN_TOKEN>.
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
+
+// One vote per voter token. The token is a random string the voting page makes
+// once per device and session. Older pages send none: they are still accepted
+// unless REQUIRE_VOTER_TOKEN=1 is set once every participant uses the new page.
+const REQUIRE_VOTER_TOKEN = process.env.REQUIRE_VOTER_TOKEN === '1';
+const VOTER_TOKEN_RE = /^[A-Za-z0-9_-]{16,64}$/;
 
 function adminGuard(req, res, next) {
   if (!ADMIN_TOKEN) {
@@ -98,6 +106,7 @@ app.post('/api/create-session', (req, res) => {
     
     // Initialize empty votes array for this session
     votes.set(sessionId, []);
+    voters.set(sessionId, new Set());
     
     console.log(`✅ Session created: ${sessionId}`);
     
@@ -154,7 +163,7 @@ app.get('/api/get-session/:sessionId', (req, res) => {
  */
 app.post('/api/submit-vote', (req, res) => {
   try {
-    const { sessionId, votes: voteData, supplementaryVotes, group } = req.body;
+    const { sessionId, votes: voteData, supplementaryVotes, group, voterToken } = req.body;
     
     // Validation
     if (!sessionId || !voteData) {
@@ -178,8 +187,25 @@ app.post('/api/submit-vote', (req, res) => {
         error: 'Session not found' 
       });
     }
+
+    // Voter token: optional for older pages, malformed ones are refused.
+    const hasToken = voterToken !== undefined && voterToken !== null && voterToken !== '';
+    if (hasToken && (typeof voterToken !== 'string' || !VOTER_TOKEN_RE.test(voterToken))) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid voterToken' 
+      });
+    }
+    if (!hasToken && REQUIRE_VOTER_TOKEN) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'voterToken is required' 
+      });
+    }
     
     const sessionVotes = votes.get(sessionId);
+    if (!voters.has(sessionId)) voters.set(sessionId, new Set());
+    const sessionVoters = voters.get(sessionId);
 
     // Keep only ratings for tasks that really exist in this session, and only
     // when importance, frequency and difficulty are all numbers from 0 to 3.
@@ -229,6 +255,19 @@ app.post('/api/submit-vote', (req, res) => {
       });
     }
     
+    // One vote per token. Checked last so a refused submission never uses
+    // up the token.
+    if (hasToken) {
+      if (sessionVoters.has(voterToken)) {
+        return res.status(409).json({ 
+          success: false, 
+          code: 'already_voted',
+          error: 'This device has already voted in this session' 
+        });
+      }
+      sessionVoters.add(voterToken);
+    }
+
     sessionVotes.push(voteRecord);
     
     console.log(`✅ Vote submitted for session: ${sessionId} (Total votes: ${sessionVotes.length})`);
@@ -416,6 +455,7 @@ app.delete('/api/debug/session/:sessionId', adminGuard, (req, res) => {
   if (sessions.has(sessionId)) {
     sessions.delete(sessionId);
     votes.delete(sessionId);
+    voters.delete(sessionId);
     
     console.log(`🗑️ Session deleted: ${sessionId}`);
     
