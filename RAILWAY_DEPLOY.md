@@ -177,3 +177,18 @@ This MVP should run comfortably on the free tier.
 - Railway Docs: https://docs.railway.app
 - Railway Discord: https://discord.gg/railway
 - Check logs: `railway logs`
+
+## Debug endpoints (`ADMIN_TOKEN`)
+
+`GET /api/debug/sessions` and `DELETE /api/debug/session/:id` are **disabled by default** (they answer 404).
+To use them, set a long random `ADMIN_TOKEN` variable in Railway and send it as a header:
+
+```
+curl -H "x-admin-token: <ADMIN_TOKEN>" https://<your-app>.up.railway.app/api/debug/sessions
+```
+
+## Vote validation
+
+`POST /api/submit-vote` accepts only ratings for tasks that exist in the session, and only when
+`importance`, `frequency` and `difficulty` are all numbers from 0 to 3. Anything else is dropped;
+a submission with no valid rating is refused with HTTP 400.
