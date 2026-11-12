@@ -126,6 +126,19 @@ function forEachTask(sessionData, cb) {
   });
 }
 
+// Monitoring endpoint for uptime checkers (UptimeRobot, Better Stack, ...).
+// Cheap and read-only, and shows no secrets or session contents.
+// Note: sessions live in memory, so uptimeSeconds going back to a small number
+// means the server restarted and any active sessions were lost.
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'dacum-live-session-backend',
+    activeSessions: sessions.size,
+    uptimeSeconds: Math.round(process.uptime())
+  });
+});
+
 // Health check endpoint
 app.get('/', (req, res) => {
   res.json({ 
